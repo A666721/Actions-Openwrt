@@ -35,7 +35,7 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@main
+      uses: actions/checkout@v4
 
     - name: Initialization environment
       env:
@@ -90,7 +90,20 @@ jobs:
       run: |
         cd openwrt
         make defconfig
-        make download -j8
+        echo "=== 关键包校验（defconfig 之后）==="
+        MISS=""
+        for p in ua2f kmod-nfnetlink-queue kmod-nft-queue libnetfilter-queue; do
+          if grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
+            echo "OK   $p"
+          else
+            echo "::error::关键包 ${p} 在 defconfig 之后被丢弃"
+            MISS="$MISS $p"
+          fi
+        done
+        if [ -n "$MISS" ]; then echo "缺失:$MISS"; exit 1; fi
+        echo "=== 目标设备 ==="
+        grep -E "^CONFIG_TARGET_PROFILE=" .config || true
+        make download -j8 || make download -j4 || make download -j1
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
@@ -110,7 +123,7 @@ jobs:
       run: df -hT
 
     - name: Upload bin directory
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v4
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
       with:
         name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
@@ -118,7 +131,7 @@ jobs:
 
     - name: Organize files
       id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      if: env.UPLOAD_FIRMWARE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
       run: |
         cd openwrt/bin/targets/*/*
         rm -rf packages
@@ -126,7 +139,7 @@ jobs:
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware directory
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v4
       if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
@@ -137,8 +150,13 @@ jobs:
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
         echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        touch release.txt
-        [ ${UPLOAD_GOFILE} = true && ${{ steps.gofile.outputs.url }} ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt
+        {
+          echo "## SL3000 (MT7981) ImmortalWrt 24.10"
+          echo ""
+          echo "- 设备: sl_3000-emmc / mediatek filogic / kernel 6.6"
+          echo "- 已内置: TTL 伪装 + UA2F（NFQUEUE）"
+          echo "- 刷机: 只刷 sysupgrade.bin，不要动 GPT 分区表"
+        } > release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware to release
@@ -148,7 +166,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: 66release.txt
+        body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
 
     - name: Delete workflow runs
